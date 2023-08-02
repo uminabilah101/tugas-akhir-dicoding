@@ -15,16 +15,20 @@ def create_total_customer_df(df):
     total_customer_df = total_customer_df.set_index('order_month').reindex(month_order)
     return total_customer_df
 
-def create_order_status_df(df):
-    order_status_df = df.pivot_table(
-        index='order_status', values='order_id', 
-        aggfunc='nunique', margins=True)
-    #mengubah nilai menjadi persentase dari total
-    order_status_df['percentage_of_total'] = order_status_df['order_id'].apply(lambda x: (x / order_status_df['order_id']['All']) * 100)
-    #mengubah nama kolom dan mereset indeks
-    order_status_df = order_status_df.rename(columns={'order_id': 'total_order'}).reset_index()
-    order_status_df['percentage_of_total'] = order_status_df['percentage_of_total'].round(2)
-    return order_status_df
+def create_order_dayofweek_df(df):
+    #membuat kolom baru berisi day of week customer melakukan pesanan
+    df['order_date_dayofweek_name'] = df['order_purchase_timestamp'].apply(lambda x: x.strftime('%A'))
+    days_order = list(calendar.day_name)
+
+    #membuat tabel pivot berisi total order berdasarkan hari
+    order_dayofweek_df = df.pivot_table(index='order_date_dayofweek_name', values='order_id', aggfunc='nunique').reset_index().sort_values(by='order_id', ascending=False)
+    order_dayofweek_df.rename(columns={'order_id': 'total_order'}, inplace=True)
+    
+    # Urutkan hari berdasarkan urutan alami (Senin, Selasa, Rabu, dst.)
+    order_dayofweek_df['order_date_dayofweek_name'] = pd.Categorical(order_dayofweek_df['order_date_dayofweek_name'], categories=days_order, ordered=True)
+    order_dayofweek_df.sort_values('order_date_dayofweek_name', inplace=True)
+
+    return order_dayofweek_df
 
 def create_order_review_df(df):
     df['review_score'].fillna('No Review', inplace=True)
@@ -34,14 +38,17 @@ def create_order_review_df(df):
     order_review_df = order_review_df.set_axis(['total_order'], axis=1).reset_index()
     return order_review_df
 
-def create_customer_state_df(df):
-    customer_state_df = df.pivot_table(
-        index='customer_state', values='customer_id', 
-        aggfunc='nunique').sort_values(by='customer_id', ascending=False)
-    #mengubah nama kolom dan mereset indeks
-    customer_state_df = customer_state_df.rename(
-        columns={'customer_id': 'number_of_customer'}).reset_index()
-    return customer_state_df
+def create_clustering_state_df(df):
+    #membuat tabel pivot baru
+    customer_state_df = df.pivot_table(index='customer_state', values='customer_id', aggfunc='nunique').sort_values(by='customer_id', ascending=False)
+    transaction_state_df = df.pivot_table(index='customer_state', values='payment_value', aggfunc='mean').reset_index()
+
+    #menggabungkan tabel
+    clustering_state_df = pd.merge(customer_state_df, transaction_state_df, on='customer_state', how='inner')
+    clustering_state_df = clustering_state_df.rename(columns={'customer_id': 'number_of_customer', 'payment_value': 'average_of_transaction'})
+    clustering_state_df['state_name'] = clustering_state_df.index
+    clustering_state_df = clustering_state_df.reset_index(drop=True)
+    return clustering_state_df
 
 def create_customer_spending_df(df):
     customer_spending_df = df.pivot_table(
@@ -77,9 +84,9 @@ main_df = all_df[(all_df["order_purchase_timestamp"] >= str(start_date)) &
                 (all_df["order_purchase_timestamp"] <= str(end_date))]
 
 total_customer_df = create_total_customer_df(main_df)
-order_status_df = create_order_status_df(main_df)
+order_dayofweek_df = create_order_dayofweek_df(main_df)
 order_review_df = create_order_review_df(main_df)
-customer_state_df = create_customer_state_df(main_df)
+clustering_state_df = create_clustering_state_df(main_df)
 customer_spending_df = create_customer_spending_df(main_df)
 
 #MEMBUAT GRAFIK 1
@@ -101,16 +108,28 @@ st.pyplot(fig)
 col1, col2 = st.columns(2)
  
 with col1:
-    st.subheader('Percentage of Customer Order Status')
-    order_status_df.rename(columns={
-        'order_status': 'Order Status',
-        'total_order': 'Total Order',
-        'percentage_of_total': 'Percentage'
-    }, inplace=True)
-    order_status_df
+    st.subheader('Total Orders by Day of Week')
+    fig, ax = plt.subplots(figsize=(8, 8))  # Mengatur ukuran grafik
+    
+    sns.barplot( 
+        x="order_date_dayofweek_name", 
+        y="total_order",
+        data=order_dayofweek_df,
+        color='#2B9C90',
+        ax=ax)
+
+    # Mengatur rotasi label pada sumbu x
+    plt.xticks(rotation=0)
+
+    # Mengatur judul dan label sumbu
+    plt.xlabel('Day of Week')
+    plt.ylabel('Total Orders')
+
+    # Menampilkan grafik batang di Streamlit
+    st.pyplot(fig)
 
 with col2:
-    st.subheader('Customer Review Based on Their Order')
+    st.subheader('Customer Review on Their Orders')
     fig, ax = plt.subplots(figsize=(8, 8))  # Mengatur ukuran grafik
     
     sns.barplot( 
@@ -146,20 +165,36 @@ ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
 st.pyplot(fig)
 
 #MEMBUAT GRAFIK 5
-st.subheader('Number of Customer Based on State')
+st.subheader('Number of Customers and Average of Transactions by State')
 fig, ax = plt.subplots(figsize=(12, 5))  # Mengatur ukuran grafik
 
-sns.barplot( 
-        x="customer_state", 
-        y="number_of_customer",
-        data=customer_state_df,
-        color='#E66F4E',
-        ax=ax)
+sns.barplot(
+    x="state_name",
+    y="number_of_customer",
+    data=clustering_state_df,
+    color='#2B9C90',
+    ax=ax
+)
+
+#mengaktifkan sumbu kanan (axis 2)
+ax2 = ax.twinx()
+
+#plot data average_of_transaction pada sumbu kanan (axis 2)
+sns.lineplot(
+    x='state_name',
+    y='average_of_transaction',
+    data=clustering_state_df,
+    color='#E66F4E',
+    marker='o',
+    ax=ax2
+)
 
 # mengatur judul dan label sumbu
 ax.set_xlabel('State Name')
 ax.set_ylabel('Number of Customer')
+ax2.set_ylabel('Average of Transactions')
 
-# menempatkan legend di luar kotak grafik
-ax.legend(loc='center left', bbox_to_anchor=(1, 0.5))
+ax.legend(labels=['Number of Customers'], loc='lower right')
+ax2.legend(labels=['Average of Transactions'], loc='upper right')
+
 st.pyplot(fig)
